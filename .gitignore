@@ -1,0 +1,6 @@
+.idea/
+*.xml
+*.iml
+res/*
+*DS_store
+src/arduino/*.pdf
