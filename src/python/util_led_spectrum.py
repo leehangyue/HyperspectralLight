@@ -191,6 +191,106 @@ class LED:
             led_spectrum = f(wavelengths)
         return led_spectrum
 
+
+class Channel:
+    """Configuration for a light channel directly regardless of its component LEDs.
+    
+    Attributes
+    ----------
+    tag : str
+        Channel identifier
+    nominal_wavelength : float
+        Nominal wavelength in nanometers (nm)
+    pwm_levels : np.ndarray
+        PWM levels for dimming control, shape (N_levels,)
+    wavelengths : np.ndarray
+        Sampling wavelengths (nm)
+    spectrum_lib : np.ndarray
+        N_levels x N_wavelengths array where:
+        - Row 0: Measured intensities (W*m^-2*nm^-1) at max level
+        - Row 1+: (Optional) Measured intensities at dimmed levels
+    """
+    def __init__(self, tag: str = None, nominal_wavelength: float = None, 
+                 pwm_levels: np.ndarray = None, wavelengths: np.ndarray = None,
+                 spectrum_lib: np.ndarray = None) -> None:
+        self.tag = tag
+        self.nominal_wavelength = nominal_wavelength
+        self._pwm_levels = pwm_levels
+        self._wavelengths = wavelengths
+        self._spectrum_lib = spectrum_lib
+        self._flux_ratios = None  # buffer for calculated flux ratios
+        self._calc_flux_ratios()
+
+    def _calc_flux_ratios(self, eps: float = 1e-3):
+        flux_ratios = np.sum(self._spectrum_lib, axis=1)
+        flux_ratios /= max(np.max(flux_ratios), 1e-15)  # normalize to max flux ratio
+        flux_ratios_order = np.argsort(flux_ratios)
+        flux_ratios = flux_ratios[flux_ratios_order]  # sort flux ratios ascendingly
+        self._pwm_levels = self._pwm_levels[flux_ratios_order]  # sort PWM levels accordingly
+        self._spectrum_lib = self._spectrum_lib[flux_ratios_order, :]  # sort spectrum library accordingly
+        if flux_ratios[0] > eps:  # if there is no zero level
+            flux_ratios = np.insert(flux_ratios, 0, 0.)  # add zero level
+            self._pwm_levels = np.insert(self._pwm_levels, 0, 0.)  # add zero PWM level
+            self._spectrum_lib = np.vstack([np.zeros_like(self._spectrum_lib[0, :]), self._spectrum_lib])  # add zero level
+        self._flux_ratios = flux_ratios
+
+    def get_pwm_level(self, flux_ratio: float) -> float:
+        """Get PWM level corresponding to given flux ratio.
+        
+        Parameters
+        ----------
+        flux_ratio : float
+            Desired flux ratio (0-1)
+            
+        Returns
+        -------
+        float
+            Corresponding PWM level (0-1)
+            
+        Notes
+        -----
+        Uses linear interpolation between measured levels.
+        """
+        if len(self._flux_ratios) > 1:
+            pwm_level = np.interp(flux_ratio, self._flux_ratios, self._pwm_levels, left=0, right=1)
+        else:
+            pwm_level = flux_ratio
+        return pwm_level
+
+    def get_spectrum(self, flux_ratio: float = 1., wavelengths: Optional[np.ndarray] = None) -> np.ndarray:
+        """Get channel spectrum at given flux ratio, optionally resampled.
+        
+        Parameters
+        ----------
+        flux_ratio : float, optional
+            Flux ratio (0-1), by default 1.0 (full power)
+        wavelengths : Optional[np.ndarray], optional
+            Target wavelengths for resampling, by default None (use native)
+            
+        Returns
+        -------
+        np.ndarray
+            Spectral intensities in W*m^-2*nm^-1
+            
+        Notes
+        -----
+        - For flux_ratio < 1, interpolates between measured dim levels
+        - For wavelengths=None, returns spectrum at native sampling
+        - Clips flux_ratio to minimum 0
+        """
+        if 0 <= flux_ratio <= 1:
+            spectrum = interp1d(x=self._flux_ratios, y=self._spectrum_lib,
+                                axis=0, bounds_error=False, fill_value=0.)(flux_ratio)
+        elif flux_ratio > 1:
+            spectrum = self._spectrum_lib[0, :] * flux_ratio
+        else:
+            spectrum = np.zeros_like(self._spectrum_lib[0, :])
+        if wavelengths is not None:
+            # resample
+            spectrum = np.interp(wavelengths, self._spectrum_lib[0, :], spectrum, left=0, right=0)
+        return spectrum
+
+
 class HyperspectralLight:
     """Tunable hyperspectral light source composed of multiple LED channels.
     
@@ -217,14 +317,16 @@ class HyperspectralLight:
         Wavelength sampling points
     """
 
-    def __init__(self, led_data_path: str = "./LEDtestdata/", 
+    def __init__(self, led_data_path: str = None, channel_spectra_path: str = None,
                  resolution: float = 1., min_wl: float = 300, max_wl: float = 1200) -> None:
         """Initialize hyperspectral light source with LED configuration.
         
         Parameters
         ----------
         led_data_path : str, optional
-            Path to LED test data directory, by default "./LEDtestdata/"
+            Path to LED test data directory
+        channel_spectra_path : str, optional
+            Path to channel spectra directory
         resolution : float, optional
             Spectral sampling resolution in nm, by default 1.0
         min_wl : float, optional
@@ -240,8 +342,8 @@ class HyperspectralLight:
         self.resolution = resolution
         self.min_wl = min_wl
         self.max_wl = max_wl
-        self.R_wirings = 0.  # Ohm
-        self.I_nominal = 0.7  # Ampere
+        # self.R_wirings = 0.  # Ohm
+        # self.I_nominal = 0.7  # Ampere
         self._led_list = []
         self._channel_list = []
         self._channel_flux_ratios = None  # buffer, updates after calling calc_channel_flux_ratios
@@ -250,6 +352,8 @@ class HyperspectralLight:
             self._load_spectrum_data(pathname=led_data_path)
             # self._load_led_fit_pars(fname_fit_results=join(led_data_path, 'Summary_fit_results.csv'))
             self._load_channel_data(pathname=led_data_path)
+        elif channel_spectra_path is not None and exists(abspath(channel_spectra_path)):
+            self._load_channel_spectra(pathname=channel_spectra_path)
         else:
             self._wavelengths = np.arange(self.min_wl, self.max_wl + self.resolution * 0.999, self.resolution)
             self._gen_leds_and_channels()
@@ -350,6 +454,68 @@ class HyperspectralLight:
             dict_comp = eval(('{' + channel_components[i_ch] + '}').replace('\t', '').strip(' ').replace(';', ','))
             assert type(dict_comp) is dict
             self._channel_list.append(dict_comp)
+
+    def _load_channel_spectra(self, pathname):
+        fnames = listdir(pathname)
+        def get_stable_spectrum(exposure_time, spectrum, 
+                                flux_rel_tol: float = 0.1, expo_time_tol: float = 1e-3):
+            """Get stable spectrum by averaging selected samples."""
+            first_usable_smpl_idx = 0
+            sample_fluxes = trapezoid(y=spectrum, x=wavelengths, axis=0)  # integrate spectrum to get fluxes
+            for smpl_idx in reversed(range(spectrum.shape[1] - 1)):
+                aver_sample_flux = np.mean(sample_fluxes[smpl_idx + 1:])
+                if abs(sample_fluxes[smpl_idx] - aver_sample_flux) > flux_rel_tol * aver_sample_flux:
+                    first_usable_smpl_idx = smpl_idx
+                    break
+                aver_expo_time = np.mean(exposure_time[smpl_idx + 1:])
+                if abs(exposure_time[smpl_idx] - aver_expo_time) > expo_time_tol:
+                    first_usable_smpl_idx = smpl_idx
+                    break
+            stable_spectrum = np.mean(spectrum[:, first_usable_smpl_idx:], axis=1)
+            return stable_spectrum
+
+        ch_data_dict = dict()
+        fnames.sort()
+        for fname in fnames:
+            if fname.lower().endswith('.csv'):
+                chxx_xxx = splitext(fname)[0]
+                channel_idx = int(chxx_xxx.split('_')[0][2:])  # extract channel index from filename
+                pwm_level = float(chxx_xxx.split('_')[1]) * 1e-2  # extract PWM level from filename
+                df = pd.read_csv(join(pathname, fname))
+                exposure_time = df.iloc[1, 1:].to_numpy(dtype=float)  # second row, second column onwards
+                wavelengths = df.iloc[2:, 0].to_numpy(dtype=float)  # third row onwards, first column
+                spectrum = df.iloc[2:, 1:].to_numpy(dtype=float)  # third row onwards, second column onwards
+                stable_spectrum = get_stable_spectrum(exposure_time, spectrum)
+                nom_wavelength = wavelengths[np.argmax(stable_spectrum)]  # nominal wavelength is where spectrum is maximum
+                # remove 2nd diffraction peaks
+                mask_to_zero = wavelengths > 1.5 * nom_wavelength
+                stable_spectrum[mask_to_zero] = 0.0
+                if self._wavelengths is None:
+                    self._wavelengths = wavelengths
+                elif not np.all(np.abs(wavelengths - self._wavelengths) < 1e-3 * wavelengths):
+                    raise ValueError('Mismatching wavelengths in dataset!')
+
+                tag = f"CH{channel_idx}"
+                if tag in ch_data_dict.keys():
+                    ch_data_dict[tag]['pwm_levels'].append(pwm_level)
+                    ch_data_dict[tag]['spectra'].append(stable_spectrum)
+                else:
+                    ch_data_dict[tag] = {
+                        'pwm_levels': [pwm_level],
+                        'spectra': [stable_spectrum],
+                        'nominal_wavelength': nom_wavelength,
+                        'wavelengths': wavelengths,
+                    }
+        self._channel_list = []  # clear channel list
+        for ch_tag, ch_data in ch_data_dict.items():
+            self._channel_list.append(Channel(
+                tag=ch_tag,
+                pwm_levels=np.array(ch_data['pwm_levels']),
+                spectrum_lib=np.maximum(np.array(ch_data['spectra']), 0.),
+                wavelengths=np.array(ch_data['wavelengths']),
+                nominal_wavelength=ch_data['nominal_wavelength'],
+            ))
+        self._channel_list.sort(key=lambda ch: int(ch.tag[2:]))
 
     def _arrange_led_channel_list(self, initializing=False):
         # ascendingly sort LEDs by nominal wavelengths
@@ -561,9 +727,13 @@ class HyperspectralLight:
         np.ndarray
             Array of nominal wavelengths in nm
         """
-        ch_wls = np.array([self.all_nominal_wls[
-            self.all_tags.index(list(ch.keys())[0])
-        ] for ch in self._channel_list])
+        try:
+            ch_wls = np.array([ch.nominal_wavelength for ch in self._channel_list])
+        except Exception:
+            # DEPRECATED legacy code
+            ch_wls = np.array([self.all_nominal_wls[
+                self.all_tags.index(list(ch.keys())[0])
+            ] for ch in self._channel_list])
         return ch_wls
 
     # def get_channel_current(self, id_channel: int, flux_ratio: Optional[float] = None) -> float:
@@ -633,7 +803,8 @@ class HyperspectralLight:
     #     V_ch += R_w * I_ch
     #     return V_ch
 
-    def get_channel_spectrum(self, id_channel: int, flux_ratio: float = 1.) -> tuple[np.ndarray, np.ndarray]:
+    def get_channel_spectrum(self, id_channel: int, flux_ratio: float = 1., 
+                             wavelengths: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
         """Get combined spectrum for channel at given flux ratio.
         
         Parameters
@@ -654,14 +825,23 @@ class HyperspectralLight:
         -----
         Currently applies same flux ratio to all LEDs in channel.
         """
-        # TODO ignored the fact that LEDs in the same channel must have the same current (therefore same I_ratio)
-        #       instead of the same flux_ratio, unless the LEDs in this channel have the same satuation
-        ch = self._channel_list[id_channel]
-        channel_spectrum = np.sum([ch[k] * self.get_LED_spectrum(id_LED=self.all_tags.index(k), 
-                                                                 flux_ratio=flux_ratio)[1]
-                                   for k in ch.keys()], 
-                                   axis=0)
-        return self.get_LED_spectrum(id_LED=-1)[0], channel_spectrum
+        if wavelengths is None:
+            wavelengths = self._wavelengths
+        if self._led_list is None or len(self._led_list) == 0:
+            # use channel spectrum directly
+            ch = self._channel_list[id_channel]
+            spectrum = ch.get_spectrum(flux_ratio=flux_ratio)
+            spectrum = np.interp(x=wavelengths, xp=self._wavelengths, fp=spectrum, left=0, right=0)
+            return wavelengths, spectrum
+        else:  # DEPRECATED!!! use individual LED spectra
+            # TODO ignored the fact that LEDs in the same channel must have the same current (therefore same I_ratio)
+            #       instead of the same flux_ratio, unless the LEDs in this channel have the same satuation
+            ch = self._channel_list[id_channel]
+            channel_spectrum = np.sum([ch[k] * self.get_LED_spectrum(id_LED=self.all_tags.index(k), 
+                                                                    flux_ratio=flux_ratio)[1]
+                                    for k in ch.keys()], 
+                                    axis=0)
+            return self.get_LED_spectrum(id_LED=-1)[0], channel_spectrum
     
     def calc_channel_flux_ratios(self, wavelengths: np.ndarray, target_spectrum: np.ndarray, 
                                  tikhonov: float = 1e-2, max_iter: int = 10, tol: float = 1e-3, 
@@ -720,7 +900,8 @@ class HyperspectralLight:
                 raise ValueError('Blurring is only applicable to arithmatically (evenly) spaced wavelengths, '+\
                                  'while self._wavelengths is not arithmatically (evenly) spaced.')
         for iter_count in range(max_iter):
-            spectrum_channels = np.vstack([self.get_channel_spectrum(id_channel=i, flux_ratio=ch_flux_ratio)[1] / 
+            spectrum_channels = np.vstack([self.get_channel_spectrum(id_channel=i, flux_ratio=ch_flux_ratio, 
+                                                                     wavelengths=self._wavelengths[wl_mask])[1] / 
                                            (1e-9 + ch_flux_ratio) for i, ch_flux_ratio in enumerate(channel_flux_ratios)])
             if blur_radius is not None:
                 spectrum_channels = np.vstack([np.convolve(spectrum_ch, blur_kernel, mode='same') for spectrum_ch in spectrum_channels])
@@ -763,6 +944,28 @@ class HyperspectralLight:
         spectrum_channels = np.vstack([self.get_channel_spectrum(id_channel=i, flux_ratio=channel_flux_ratios[i])[1] 
                                    for i in range(self.N_channels)])
         return self._wavelengths[wl_mask], np.sum(spectrum_channels, axis=0)[wl_mask]
+    
+    def get_pwm_ratios_from_channel_flux_ratios(self, channel_flux_ratios: Optional[np.ndarray] = None) -> np.ndarray:
+        """Get PWM ratios for each channel based on flux ratios.
+        
+        Parameters
+        ----------
+        channel_flux_ratios : Optional[np.ndarray], optional
+            Flux ratios (0-1) for each channel, by default uses last calculated ratios
+            
+        Returns
+        -------
+        np.ndarray
+            PWM ratios (0-1) for each channel
+        """
+        if channel_flux_ratios is None:
+            channel_flux_ratios = self._channel_flux_ratios
+        pwm_ratios = np.zeros(self.N_channels)
+        for i in range(self.N_channels):
+            ch = self._channel_list[i]
+            pwm_ratio = ch.get_pwm_level(channel_flux_ratios[i])
+            pwm_ratios[i] = pwm_ratio
+        return pwm_ratios
 
 def flux2current(flux_ratio: float, satuation: float) -> float:
     """Convert flux ratio to current ratio using saturation model.

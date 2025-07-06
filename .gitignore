@@ -4,3 +4,5 @@
 res/*
 *DS_store
 src/arduino/*.pdf
+*__pycache__*
+*.pyc
