@@ -26,8 +26,8 @@ def plot_results(h_light: HyperspectralLight, target_spectrum: np.ndarray, outpu
                             exposure_adj=exposure_adj_led, brightness_wavelength_range=(340, 1020))
         rgb_leds.append(rgb)
 
-    fig, axs = plt.subplots(ncols=1, nrows=6, constrained_layout=True, figsize=(8, 20))
-    ax0, ax1, ax2, ax3, ax4, ax5 = axs
+    fig, axs = plt.subplots(ncols=2, nrows=3, constrained_layout=True, figsize=(14, 8))
+    ax0, ax1, ax2, ax3, ax4, ax5 = axs.flatten()
 
     brightness_wavelength_range = (390, 710)
     ax0.set_facecolor(cs.spec_to_rgb(wavelengths=h_light._wavelengths, spectrum=target_spectrum, out_fmt='html', 

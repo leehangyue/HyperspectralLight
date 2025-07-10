@@ -486,7 +486,10 @@ class HyperspectralLight:
                 wavelengths = df.iloc[2:, 0].to_numpy(dtype=float)  # third row onwards, first column
                 spectrum = df.iloc[2:, 1:].to_numpy(dtype=float)  # third row onwards, second column onwards
                 stable_spectrum = get_stable_spectrum(exposure_time, spectrum)
-                nom_wavelength = wavelengths[np.argmax(stable_spectrum)]  # nominal wavelength is where spectrum is maximum
+                if np.average(stable_spectrum) > 0:
+                    nom_wavelength = wavelengths[np.argmax(stable_spectrum)]  # nominal wavelength is where spectrum is maximum
+                else:
+                    nom_wavelength = np.nan
                 # remove 2nd diffraction peaks
                 mask_to_zero = wavelengths > 1.5 * nom_wavelength
                 stable_spectrum[mask_to_zero] = 0.0
@@ -1126,7 +1129,7 @@ def read_spectrum_file(fname: str, wavelengths: Optional[np.ndarray] = None,
     - Applies calibration if fname_calibration is provided and newer than data file
     - Uses linear interpolation for resampling
     """
-    with open(fname, 'r', errors='ignore') as f:
+    with open(abspath(fname), 'r', errors='ignore') as f:
         lines = f.readlines()
     start_line_num = 0
     for i, line in enumerate(lines):
