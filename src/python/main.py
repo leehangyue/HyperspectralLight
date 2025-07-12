@@ -90,11 +90,13 @@ def main():
     #                                        flux_ratio_min=flux_ratio_min, flux_ratio_max=flux_ratio_max, 
     #                                        R_wirings=R_wirings, V_low_lim=V_low_lim)
     h_light = HyperspectralLight(min_wl=340, max_wl=1020, 
-                                 channel_spectra_path=join(dirname(dirname(dirname(__file__))), "res/channel_calibration_data"),
+                                #  channel_spectra_path=join(dirname(dirname(dirname(__file__))), "res/channel_calibration_data_open"),
+                                 channel_spectra_path=join(dirname(dirname(dirname(__file__))), "res/channel_calibration_data_barrel"),
                                  )
     wavelengths = h_light._wavelengths
+
     correction_coefs = np.array(h_light.get_channel_nom_wls()) / 1e3
-    correction_coefs = -correction_coefs + 1.5
+    correction_coefs = -correction_coefs + 1.6
     correction_coefs /= np.nanmean(correction_coefs)
     for i in range(h_light.N_channels):
         correction = correction_coefs[i]
@@ -105,8 +107,8 @@ def main():
     blur_kernel = np.exp(-((np.arange(-blur_radius * 3, blur_radius * 3 + 1)) / blur_radius) ** 2 / 2)  # gaussian kernel
     blur_kernel /= np.sum(blur_kernel)
 
-    # uv_off = True
-    uv_off = False
+    uv_off = True
+    # uv_off = False
 
     # ir_off = True
     ir_off = False
@@ -122,7 +124,7 @@ def main():
     # target_spectrum = cherenkov_radiation(wavelength=wavelengths)
     # target_spectrum = wavelengths * 0 + 1  # equi-power
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/SunsetOrdinary/merged_spectra_only.csv', wavelengths=wavelengths, intensity_column=150)
-    # target_spectrum = read_spectrum_file(fname='res/sample spectra/SunsetRed/merged_spectra_only.csv', wavelengths=wavelengths, intensity_column=150)
+    # target_spectrum = read_spectrum_file(fname='res/sample spectra/SunsetRed/merged_spectra_only.csv', wavelengths=wavelengths, intensity_column=120)
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/cloudy_daylight_20240307131758.csv', wavelengths=wavelengths, fname_calibration=calibration_file)
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/direct_sunlight_20240312123009.csv', wavelengths=wavelengths, fname_calibration=calibration_file)
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/gold_fluorescent_light_20240225194221.csv', wavelengths=wavelengths, fname_calibration=calibration_file)
@@ -144,7 +146,10 @@ def main():
     target_spectrum_blurred *= intensity_adjusting_factor
 
     # fit spectrum
-    h_light.min_wl = 370
+    if uv_off:
+        h_light.min_wl = 420
+    else:
+        h_light.min_wl = 370
     if ir_off:
         h_light.max_wl = 720
     else:
@@ -171,8 +176,6 @@ def main():
 
     pwm_ratios = h_light.get_pwm_ratios_from_channel_flux_ratios(channel_flux_ratios=channel_flux_ratios)
     pwm_ratios = np.minimum(1., pwm_ratios)
-    if uv_off:
-        pwm_ratios[:1] = 0.
 
     # pwm_ratios[:12] = 0.
     # pwm_ratios[13:] = 0.

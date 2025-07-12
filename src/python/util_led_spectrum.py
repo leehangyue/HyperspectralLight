@@ -944,7 +944,7 @@ class HyperspectralLight:
             bounding_mask = np.eye(len(a))
             res = qp(G, a, bounding_mask, np.zeros(len(a)))
             channel_flux_ratios_new = res[0] * scaling_factor
-            scaling_factor = np.average(channel_flux_ratios_new)
+            scaling_factor = max(1e-6, np.average(channel_flux_ratios_new))
             errsq = np.sum((channel_flux_ratios_new - channel_flux_ratios)**2) / (np.sum(channel_flux_ratios**2) + 1e-12)
             # urf: under-relaxation factor, 0 < urf <= 1, cosine annealing
             urf = (0.5 * np.cos(iter_count * np.pi / (max_iter - 1)) + 0.5) * (1 - anneal_end) + anneal_end
