@@ -25,8 +25,17 @@ def time_to_str(time_epoch: float):
     return formatted_time
 
 
+def lights_off():
+    pca9685 = PCA9685()
+    pca9685.i2c_address = int(0x43)
+    pca9685.set_channels(channel_flux_ratios=np.zeros(16))
+    pca9685.i2c_address = int(0x42)
+    pca9685.set_channels(channel_flux_ratios=np.zeros(16))
+    pca9685.sender.stop()
+
+
 def save_calibration_data(spectrometer_port: str, n_channels: int = 30, 
-                          set_flux_ratios: list = [1., 0.5, 0.2, 0.1, 0.03, 0.02, 0.01],
+                          set_flux_ratios: list = [1., 0.5, 0.2, 0.1, 0.05],
                           save_folder: str = "channel_calibration_data"):
     """
     获取校准数据并保存
@@ -53,7 +62,8 @@ def save_calibration_data(spectrometer_port: str, n_channels: int = 30,
 
     for ch_idx in range(n_channels):
         lights_off()
-        _ = input(f"请将光谱仪对准通道{ch_idx}，按回车开始测量\n")
+        time.sleep(0.2)
+        # _ = input(f"请将光谱仪对准通道{ch_idx}，按回车开始测量\n")
         for flux_ratio in set_flux_ratios:
             print(f"正在测量通道{ch_idx}，亮度{flux_ratio*100}%...")
             channel_flux_ratios = np.zeros(n_channels)
@@ -76,7 +86,7 @@ def save_calibration_data(spectrometer_port: str, n_channels: int = 30,
             time.sleep(2)  # 等待2秒以确保光源稳定
 
             # 设置曝光时间
-            if spectrometer.set_exposure_time(int(0.5 + 1000 / flux_ratio)):
+            if spectrometer.set_exposure_time(int(0.5 + 50 * 1000 / flux_ratio)):
                 print("成功设置曝光时间")
 
             # 连续采集多帧光谱
@@ -90,7 +100,7 @@ def save_calibration_data(spectrometer_port: str, n_channels: int = 30,
             spectra_data = np.array([spec["spectrum"] for spec in spectra])
             exposure_time_ms = [spec["exposure_time_us"] * 1e-3 for spec in spectra]
             time_strs = [time_to_str(spec["measure_time_epoch"]) for spec in spectra]
-            
+
             delim = ","
             titles = ["Sample index"] + [str(smpl_idx + 0) for smpl_idx in range(len(spectra))]
             fname_save = f"ch{ch_idx:02d}_{int(flux_ratio*100+0.5):03d}.csv"
@@ -104,20 +114,16 @@ def save_calibration_data(spectrometer_port: str, n_channels: int = 30,
                        comments="", encoding="utf-8", fmt="%s")
             print(f"已保存通道{ch_idx}亮度{flux_ratio*100}%的光谱数据到 {fname_save}")
 
-
-def lights_off():
-    pca9685 = PCA9685()
-    pca9685.i2c_address = int(0x43)
-    pca9685.set_channels(channel_flux_ratios=np.zeros(16))
-    pca9685.i2c_address = int(0x42)
-    pca9685.set_channels(channel_flux_ratios=np.zeros(16))
-    pca9685.sender.stop()
+            if np.max(spectra_data) == 0.:
+                break  # if the channel does not shine at all, skip all remaining dim levels
 
 
 def main():
     lights_off()
-    save_calibration_data("/dev/cu.usbmodem57190190851")
-    lights_off()
+    try:
+        save_calibration_data("/dev/cu.usbmodem57190190851")
+    finally:
+        lights_off()
 
 
 if __name__ == "__main__":

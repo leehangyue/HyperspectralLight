@@ -67,21 +67,28 @@ class PJGSpectrometer:
         初始化光谱仪连接
         :param port: 串口号 (如 'COM3' 或 '/dev/ttyUSB0')
         """
-        self.ser = serial.Serial(
-            port=port,
+        self.port = port
+        self.get_serial()
+
+    def get_serial(self):
+        self.ser =  serial.Serial(
+            port=self.port,
             baudrate=921600,  # 波特率
             bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
             timeout=2  # 读取超时时间(秒)
         )
+        return self.ser
     
-    def _send_command(self, cmd_type: int, data: bytes = b"", no_response: bool = False) -> bytes:
+    def _send_command(self, cmd_type: int, data: bytes = b"", no_response: bool = False, 
+                      retries: int = 10) -> bytes:
         """
         发送命令并接收响应(内部方法)
         :param cmd_type: 命令类型字节
         :param data: 命令数据
         :param no_response: 是否预期没有响应数据
+        :param retries: 重复尝试次数
         :return: 响应数据包
         """
         # 构建完整命令包
@@ -92,45 +99,62 @@ class PJGSpectrometer:
         cmd_data = self.CMD_HEADER + length_bytes + bytes([cmd_type]) + data
         checksum = sum(cmd_data) & 0xFF
         
-        # 完整命令包
-        full_cmd = cmd_data + bytes([checksum]) + self.END_MARKER
-        self.ser.flush()  # 清空串口缓冲区
-        self.ser.write(full_cmd)
-        
-        if no_response:
-            return b""
+        err = None
+        for attempt in range(retries):
+            try:
+                # 完整命令包
+                full_cmd = cmd_data + bytes([checksum]) + self.END_MARKER
+                self.ser.reset_output_buffer()
+                time.sleep(0.05)
+                self.ser.reset_input_buffer()
+                self.ser.write(full_cmd)
+                
+                if no_response:
+                    return b""
+                
+                time.sleep(0.05)
 
-        # 读取响应头
-        header = self.ser.read(2)
-        if header != self.RESP_HEADER:
-            raise ValueError("无效的响应头")
-        
-        # 读取包长度(小端3字节)
-        len_bytes = self.ser.read(3)
-        total_len = struct.unpack("<I", len_bytes + b"\x00")[0]
-        
-        # 读取剩余数据
-        remaining_len = total_len - 5  # 减去已读的5字节(头2B+长度3B)
-        if remaining_len < 4:  # 至少应有类型1B+校验1B+结束2B
-            raise ValueError("无效的包长度")
-        
-        response_data = self.ser.read(remaining_len)
-        
-        # 验证结束标识
-        if response_data[-2:] != self.END_MARKER:
-            raise ValueError("无效的结束标识")
-        
-        # 验证校验和
-        received_checksum = response_data[-3]
-        calculated_checksum = (sum(self.RESP_HEADER) + 
-                               sum(len_bytes) + 
-                               sum(response_data[:-3])) & 0xFF
-        
-        if received_checksum != calculated_checksum:
-            raise ValueError("校验和错误")
-        
-        # 返回有效数据(不包括类型、校验和和结束标识)
-        return response_data[1:-3]  # 跳过类型字节，去掉校验和和结束标识
+                # 读取响应头
+                header = self.ser.read(2)
+                if header != self.RESP_HEADER:
+                    raise ValueError("无效的响应头")
+                
+                # 读取包长度(小端3字节)
+                len_bytes = self.ser.read(3)
+                total_len = struct.unpack("<I", len_bytes + b"\x00")[0]
+                
+                # 读取剩余数据
+                remaining_len = total_len - 5  # 减去已读的5字节(头2B+长度3B)
+                if remaining_len < 4:  # 至少应有类型1B+校验1B+结束2B
+                    raise ValueError("无效的包长度")
+                
+                response_data = self.ser.read(remaining_len)
+                
+                # 验证结束标识
+                if response_data[-2:] != self.END_MARKER:
+                    raise ValueError("无效的结束标识")
+                
+                # 验证校验和
+                received_checksum = response_data[-3]
+                calculated_checksum = (sum(self.RESP_HEADER) + 
+                                    sum(len_bytes) + 
+                                    sum(response_data[:-3])) & 0xFF
+                
+                if received_checksum != calculated_checksum:
+                    raise ValueError("校验和错误")
+                
+                # 返回有效数据(不包括类型、校验和和结束标识)
+                return response_data[1:-3]  # 跳过类型字节，去掉校验和和结束标识
+            except ValueError as e:
+                print(f"Got an error: {e}")
+                err = e
+                self.ser.close()
+                time.sleep(0.5)
+                self.get_serial()
+                time.sleep(0.5)
+        else:
+            if err is not None:
+                raise err
     
     def _parse_float_data(self, data: bytes, count: int) -> List[float]:
         """解析浮点数数组"""
@@ -252,7 +276,6 @@ class PJGSpectrometer:
         try:
             while frame_count < num_frames:
                 # assert self.ser.in_waiting == frame_size
-                time.sleep(0.03)
                 # 读取完整帧
                 header = self.ser.read(2)
                 if header != self.RESP_HEADER:
@@ -291,7 +314,7 @@ class PJGSpectrometer:
         finally:
             # 确保停止采集
             self.stop_continuous_acquisition()
-            time.sleep(0.03)
+            time.sleep(0.05)
         
         return spectra
     
@@ -404,7 +427,7 @@ class PJGSpectrometer:
             self.ser.write(full_cmd)
             
             # 添加短暂延迟防止缓冲区溢出
-            time.sleep(0.03)
+            time.sleep(0.05)
     
     def validate_efficiency_curve(self) -> bool:
         """校验效率曲线并计算"""

@@ -1205,4 +1205,3 @@ def get_default_channel_list_from_fit_results(fname_fit_results='LEDtestdata/Sum
 
 if __name__ == '__main__':
     h_light = HyperspectralLight()
-    print(h_light.get_channel_voltage(id_channel=11, flux_ratio=0.5/h_light.I_nominal))
