@@ -221,6 +221,15 @@ class Channel:
         self._flux_ratios = None  # buffer for calculated flux ratios
         self._calc_flux_ratios()
 
+    @property
+    def spectrum_lib(self):
+        return self._spectrum_lib
+
+    @spectrum_lib.setter
+    def spectrum_lib(self, spectrum_lib):
+        self._spectrum_lib = spectrum_lib
+        self._calc_flux_ratios()
+
     def _calc_flux_ratios(self, eps: float = 1e-3):
         flux_ratios = np.sum(self._spectrum_lib, axis=1)
         flux_ratios /= max(np.max(flux_ratios), 1e-15)  # normalize to max flux ratio
@@ -253,6 +262,8 @@ class Channel:
         """
         if len(self._flux_ratios) > 1:
             pwm_level = np.interp(flux_ratio, self._flux_ratios, self._pwm_levels, left=0, right=1)
+        elif np.max(self._flux_ratios) == 0.:
+            pwm_level = 0.
         else:
             pwm_level = flux_ratio
         return pwm_level
@@ -849,7 +860,8 @@ class HyperspectralLight:
     def calc_channel_flux_ratios(self, wavelengths: np.ndarray, target_spectrum: np.ndarray, 
                                  max_flux_ratio: float = None,
                                  tikhonov: float = 1e-2, max_iter: int = 10, tol: float = 1e-3, 
-                                 blur_radius: Optional[float] = None) -> np.ndarray:
+                                 blur_radius: Optional[float] = None, 
+                                 off_channel_mask = None) -> np.ndarray:
         """Calculate optimal channel flux ratios to match target spectrum.
         
         Parameters
@@ -868,6 +880,9 @@ class HyperspectralLight:
             Convergence tolerance for flux ratios, by default 1e-3
         blur_radius : Optional[float], optional
             Gaussian blur radius (nm) to apply before optimization, by default None
+        off_channel_mask : Optional[1D np.ndarray]
+            where True, correpsonding channels are forced to turn off, default None
+            len(off_channel_mask) == self.N_channels
             
         Returns
         -------
@@ -886,8 +901,12 @@ class HyperspectralLight:
         
         May raise ValueError if wavelengths are unevenly spaced when blur_radius is used.
         """
-        if np.max(target_spectrum) <= 0 or max_flux_ratio <= 0:
+        if np.max(target_spectrum) <= 0 or (max_flux_ratio is not None and max_flux_ratio <= 0):
             return np.zeros(self.N_channels)  # no flux needed to match zero target spectrum
+        if off_channel_mask is None:
+            off_channel_mask = np.array([False, ] * self.N_channels)
+        N_active_channels = np.sum(off_channel_mask == False)
+        active_channel_idx = np.argwhere(off_channel_mask == False).flatten()
         wl_mask = np.logical_and(self.min_wl <= self._wavelengths, self._wavelengths <= self.max_wl)
         f = interp1d(x=wavelengths, y=target_spectrum)
         target_spectrum_vector = f(self._wavelengths[wl_mask])
@@ -895,10 +914,10 @@ class HyperspectralLight:
         # matrix equation to solve: 
         # (spectrum_channels @ spectrum_channels.T) @ led_power = (spectrum_channels @ target_spectra)
         # A @ led_power = b
-        M = np.array([[(i==j) - (i==j+1) for j in range(self.N_channels)] for i in range(self.N_channels)])
+        M = np.array([[(i==j) - (i==j+1) for j in range(N_active_channels)] for i in range(N_active_channels)])
         M[0][0] -= 1  # M: second-order differential operator
 
-        channel_flux_ratios = np.ones(self.N_channels)  # initial flux ratios
+        channel_flux_ratios = np.ones(N_active_channels)  # initial flux ratios
         if max_flux_ratio is not None:
             channel_flux_ratios *= max_flux_ratio
         anneal_end = 1. / max_iter  # final (minimum) under-relaxation factor
@@ -911,15 +930,16 @@ class HyperspectralLight:
                                  'while self._wavelengths is not arithmatically (evenly) spaced.')
         if blur_radius is not None:
             target_spectrum_vector = np.convolve(target_spectrum_vector, blur_kernel, mode='same')
+        
         for iter_count in range(max_iter):
-            spectrum_channels = np.vstack([self.get_channel_spectrum(id_channel=i, flux_ratio=ch_flux_ratio, 
+            spectrum_channels = np.vstack([self.get_channel_spectrum(id_channel=active_channel_idx[i], flux_ratio=ch_flux_ratio, 
                                                                      wavelengths=self._wavelengths[wl_mask])[1] / 
                                            (1e-9 + ch_flux_ratio) for i, ch_flux_ratio in enumerate(channel_flux_ratios)])
             if max_flux_ratio is not None:
                 target_spectrum_vector *= (max_flux_ratio / np.max(channel_flux_ratios))
             if blur_radius is not None:
                 spectrum_channels = np.vstack([np.convolve(spectrum_ch, blur_kernel, mode='same') for spectrum_ch in spectrum_channels])
-            G = spectrum_channels @ spectrum_channels.T + tikhonov * (M @ M.T + 0.1 * np.eye(self.N_channels))
+            G = spectrum_channels @ spectrum_channels.T + tikhonov * (M @ M.T + 0.1 * np.eye(N_active_channels))
             a = spectrum_channels @ target_spectrum_vector / scaling_factor
             bounding_mask = np.eye(len(a))
             res = qp(G, a, bounding_mask, np.zeros(len(a)))
@@ -933,8 +953,9 @@ class HyperspectralLight:
             if errsq < tol**2:
                 break
         channel_flux_ratios = np.maximum(0., channel_flux_ratios)
-        self._channel_flux_ratios = channel_flux_ratios
-        return channel_flux_ratios
+        self._channel_flux_ratios = np.zeros(self.N_channels)
+        self._channel_flux_ratios[active_channel_idx] = channel_flux_ratios
+        return self._channel_flux_ratios
     
     def output_spectrum(self, channel_flux_ratios: Optional[np.ndarray] = None) -> tuple[np.ndarray, np.ndarray]:
         """Get combined spectrum for all channels at given flux ratios.

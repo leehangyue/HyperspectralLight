@@ -9,11 +9,6 @@ from os.path import join, dirname
 
 def main():
     
-    # uv_off = True
-    uv_off = False
-
-    max_flux_ratio = 0.3  # maximum flux ratio for any channel
-
     # flux_ratio_min = 5e-5
     # flux_ratio_max = 0.5  # with values greater than 0.5, the rectifier diodes may heat up significantly
 
@@ -97,20 +92,27 @@ def main():
     h_light = HyperspectralLight(min_wl=340, max_wl=1020, 
                                  channel_spectra_path=join(dirname(dirname(dirname(__file__))), "res/channel_calibration_data"),
                                  )
-
     wavelengths = h_light._wavelengths
 
     blur_radius = 15  # nm
     blur_kernel = np.exp(-((np.arange(-blur_radius * 3, blur_radius * 3 + 1)) / blur_radius) ** 2 / 2)  # gaussian kernel
     blur_kernel /= np.sum(blur_kernel)
 
+    # uv_off = True
+    uv_off = False
+
+    # ir_off = True
+    ir_off = False
+
+    max_flux_ratio = 0.9  # maximum flux ratio for any channel
+
     # # measure or generate target
     calibration_file = 'res/LEDtestdata/multiply_this_with_spectra_before_202403150108.csv'
-    target_spectrum = blackbody_radiation(wavelength=wavelengths, temperature=5500, normalize=True)
+    target_spectrum = blackbody_radiation(wavelength=wavelengths, temperature=3800, normalize=True)
     # target_spectrum = cherenkov_radiation(wavelength=wavelengths)
     # target_spectrum = wavelengths * 0 + 1  # equi-power
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/SunsetOrdinary/merged_spectra_only.csv', wavelengths=wavelengths, intensity_column=150)
-    # target_spectrum = read_spectrum_file(fname='res/sample spectra/SunsetRed/merged_spectra_only.csv', wavelengths=wavelengths, intensity_column=120)
+    # target_spectrum = read_spectrum_file(fname='res/sample spectra/SunsetRed/merged_spectra_only.csv', wavelengths=wavelengths, intensity_column=150)
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/cloudy_daylight_20240307131758.csv', wavelengths=wavelengths, fname_calibration=calibration_file)
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/direct_sunlight_20240312123009.csv', wavelengths=wavelengths, fname_calibration=calibration_file)
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/gold_fluorescent_light_20240225194221.csv', wavelengths=wavelengths, fname_calibration=calibration_file)
@@ -132,11 +134,16 @@ def main():
     target_spectrum_blurred *= intensity_adjusting_factor
 
     # fit spectrum
-    h_light.min_wl = 350
-    h_light.max_wl = 990
+    h_light.min_wl = 380
+    if ir_off:
+        h_light.max_wl = 720
+    else:
+        h_light.max_wl = 990
+    off_channel_mask = np.array([False] * h_light.N_channels)
+    # off_channel_mask[1::2] = True
     channel_flux_ratios = h_light.calc_channel_flux_ratios(
         wavelengths=wavelengths, target_spectrum=target_spectrum, blur_radius=5, 
-        max_flux_ratio=max_flux_ratio)
+        max_flux_ratio=max_flux_ratio, off_channel_mask=off_channel_mask)
     h_light.min_wl = 340
     h_light.max_wl = 1020
     _, output_spectrum = h_light.output_spectrum(channel_flux_ratios=channel_flux_ratios)
@@ -145,13 +152,13 @@ def main():
     output_spectrum *= intensity_adjusting_factor
     output_spectrum_blurred *= intensity_adjusting_factor
 
-    # show plot before applying PWM ratios
-    from util_plot import plot_results, show_plot
-    fig, axs = plot_results(h_light=h_light, target_spectrum=target_spectrum, output_spectrum=output_spectrum, 
-                            wavelengths=wavelengths,
-                            target_spectrum_blurred=target_spectrum_blurred, output_spectrum_blurred=output_spectrum_blurred,
-                            channel_flux_ratios=channel_flux_ratios)
-    show_plot()
+    # # show plot before applying PWM ratios
+    # from util_plot import plot_results, show_plot
+    # fig, axs = plot_results(h_light=h_light, target_spectrum=target_spectrum, output_spectrum=output_spectrum, 
+    #                         wavelengths=wavelengths,
+    #                         target_spectrum_blurred=target_spectrum_blurred, output_spectrum_blurred=output_spectrum_blurred,
+    #                         channel_flux_ratios=channel_flux_ratios)
+    # show_plot()
 
     pwm_ratios = h_light.get_pwm_ratios_from_channel_flux_ratios(channel_flux_ratios=channel_flux_ratios)
     pwm_ratios = np.minimum(1., pwm_ratios)
