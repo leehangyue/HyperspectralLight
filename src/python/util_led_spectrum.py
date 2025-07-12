@@ -847,6 +847,7 @@ class HyperspectralLight:
             return self.get_LED_spectrum(id_LED=-1)[0], channel_spectrum
     
     def calc_channel_flux_ratios(self, wavelengths: np.ndarray, target_spectrum: np.ndarray, 
+                                 max_flux_ratio: float = None,
                                  tikhonov: float = 1e-2, max_iter: int = 10, tol: float = 1e-3, 
                                  blur_radius: Optional[float] = None) -> np.ndarray:
         """Calculate optimal channel flux ratios to match target spectrum.
@@ -857,6 +858,8 @@ class HyperspectralLight:
             Wavelength sampling points for target spectrum (nm)
         target_spectrum : np.ndarray
             Desired spectral intensities (W*m^-2*nm^-1)
+        max_flux_ratio : float, optional
+            Maximum flux ratio target for all channels, by default None
         tikhonov : float, optional
             Regularization factor to prevent unnecessary flux variations, by default 1e-2
         max_iter : int, optional
@@ -883,6 +886,8 @@ class HyperspectralLight:
         
         May raise ValueError if wavelengths are unevenly spaced when blur_radius is used.
         """
+        if np.max(target_spectrum) <= 0 or max_flux_ratio <= 0:
+            return np.zeros(self.N_channels)  # no flux needed to match zero target spectrum
         wl_mask = np.logical_and(self.min_wl <= self._wavelengths, self._wavelengths <= self.max_wl)
         f = interp1d(x=wavelengths, y=target_spectrum)
         target_spectrum_vector = f(self._wavelengths[wl_mask])
@@ -893,7 +898,9 @@ class HyperspectralLight:
         M = np.array([[(i==j) - (i==j+1) for j in range(self.N_channels)] for i in range(self.N_channels)])
         M[0][0] -= 1  # M: second-order differential operator
 
-        channel_flux_ratios = np.ones(self.N_channels)
+        channel_flux_ratios = np.ones(self.N_channels)  # initial flux ratios
+        if max_flux_ratio is not None:
+            channel_flux_ratios *= max_flux_ratio
         anneal_end = 1. / max_iter  # final (minimum) under-relaxation factor
         scaling_factor = 1.
         if blur_radius is not None:
@@ -902,20 +909,23 @@ class HyperspectralLight:
             if np.std(np.diff(self._wavelengths[wl_mask])) > 1e-3:
                 raise ValueError('Blurring is only applicable to arithmatically (evenly) spaced wavelengths, '+\
                                  'while self._wavelengths is not arithmatically (evenly) spaced.')
+        if blur_radius is not None:
+            target_spectrum_vector = np.convolve(target_spectrum_vector, blur_kernel, mode='same')
         for iter_count in range(max_iter):
             spectrum_channels = np.vstack([self.get_channel_spectrum(id_channel=i, flux_ratio=ch_flux_ratio, 
                                                                      wavelengths=self._wavelengths[wl_mask])[1] / 
                                            (1e-9 + ch_flux_ratio) for i, ch_flux_ratio in enumerate(channel_flux_ratios)])
+            if max_flux_ratio is not None:
+                target_spectrum_vector *= (max_flux_ratio / np.max(channel_flux_ratios))
             if blur_radius is not None:
                 spectrum_channels = np.vstack([np.convolve(spectrum_ch, blur_kernel, mode='same') for spectrum_ch in spectrum_channels])
-                target_spectrum_vector = np.convolve(target_spectrum_vector, blur_kernel, mode='same')
             G = spectrum_channels @ spectrum_channels.T + tikhonov * (M @ M.T + 0.1 * np.eye(self.N_channels))
             a = spectrum_channels @ target_spectrum_vector / scaling_factor
             bounding_mask = np.eye(len(a))
             res = qp(G, a, bounding_mask, np.zeros(len(a)))
             channel_flux_ratios_new = res[0] * scaling_factor
             scaling_factor = np.average(channel_flux_ratios_new)
-            errsq = np.sum((channel_flux_ratios_new - channel_flux_ratios)**2) / np.sum(channel_flux_ratios**2)
+            errsq = np.sum((channel_flux_ratios_new - channel_flux_ratios)**2) / (np.sum(channel_flux_ratios**2) + 1e-12)
             # urf: under-relaxation factor, 0 < urf <= 1, cosine annealing
             urf = (0.5 * np.cos(iter_count * np.pi / (max_iter - 1)) + 0.5) * (1 - anneal_end) + anneal_end
             channel_flux_ratios = channel_flux_ratios_new * urf + channel_flux_ratios * (1 - urf)

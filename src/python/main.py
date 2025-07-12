@@ -12,7 +12,7 @@ def main():
     # uv_off = True
     uv_off = False
 
-    output_gain = 0.2
+    max_flux_ratio = 0.3  # maximum flux ratio for any channel
 
     # flux_ratio_min = 5e-5
     # flux_ratio_max = 0.5  # with values greater than 0.5, the rectifier diodes may heat up significantly
@@ -106,7 +106,7 @@ def main():
 
     # # measure or generate target
     calibration_file = 'res/LEDtestdata/multiply_this_with_spectra_before_202403150108.csv'
-    target_spectrum = blackbody_radiation(wavelength=wavelengths, temperature=2500, normalize=True)
+    target_spectrum = blackbody_radiation(wavelength=wavelengths, temperature=5500, normalize=True)
     # target_spectrum = cherenkov_radiation(wavelength=wavelengths)
     # target_spectrum = wavelengths * 0 + 1  # equi-power
     # target_spectrum = read_spectrum_file(fname='res/sample spectra/SunsetOrdinary/merged_spectra_only.csv', wavelengths=wavelengths, intensity_column=150)
@@ -127,20 +127,25 @@ def main():
     # target_spectrum *= read_spectrum_file(fname='res/sample spectra/CB590_transmittance.csv', wavelengths=wavelengths)
 
     target_spectrum_blurred = np.convolve(target_spectrum, blur_kernel, mode='same')
-    intensity_adjusting_factor = 1. / np.max(target_spectrum_blurred) * output_gain
+    intensity_adjusting_factor = 1. / np.max(target_spectrum_blurred)
     target_spectrum *= intensity_adjusting_factor
     target_spectrum_blurred *= intensity_adjusting_factor
 
     # fit spectrum
     h_light.min_wl = 350
     h_light.max_wl = 990
-    channel_flux_ratios = h_light.calc_channel_flux_ratios(wavelengths=wavelengths, target_spectrum=target_spectrum, blur_radius=5)
+    channel_flux_ratios = h_light.calc_channel_flux_ratios(
+        wavelengths=wavelengths, target_spectrum=target_spectrum, blur_radius=5, 
+        max_flux_ratio=max_flux_ratio)
     h_light.min_wl = 340
     h_light.max_wl = 1020
     _, output_spectrum = h_light.output_spectrum(channel_flux_ratios=channel_flux_ratios)
     output_spectrum_blurred = np.convolve(output_spectrum, blur_kernel, mode='same')
+    intensity_adjusting_factor = 1. / np.max(output_spectrum_blurred)
+    output_spectrum *= intensity_adjusting_factor
+    output_spectrum_blurred *= intensity_adjusting_factor
 
-    # TODO debugging
+    # show plot before applying PWM ratios
     from util_plot import plot_results, show_plot
     fig, axs = plot_results(h_light=h_light, target_spectrum=target_spectrum, output_spectrum=output_spectrum, 
                             wavelengths=wavelengths,
@@ -157,7 +162,7 @@ def main():
     # pwm_ratios[13:] = 0.
     # pwm_ratios *= 0. / np.max(pwm_ratios[:15])
     # pwm_ratios *= 1. / np.max(pwm_ratios[15:])
-    # pwm_ratios = np.ones(30) * 0.005
+    # pwm_ratios = np.ones(30) * 1.
     
     # pwm_ratios = np.zeros(30)
     # pwm_ratios[2] = 0.1
@@ -175,11 +180,11 @@ def main():
 
     pwm_ratios_1 = np.append(pwm_ratios[ctrl1_channels], 0.)
     pca9685.i2c_address = int(0x43)
-    pca9685.set_channels(channel_flux_ratios=pwm_ratios_1)
+    pca9685.set_channels(channel_flux_ratios=pwm_ratios_1, offset=0.)
 
     pwm_ratios_2 = np.append(pwm_ratios[ctrl2_channels], 0.)
     pca9685.i2c_address = int(0x42)
-    pca9685.set_channels(channel_flux_ratios=pwm_ratios_2)
+    pca9685.set_channels(channel_flux_ratios=pwm_ratios_2, offset=0.)
     # sleep(0.8)
 
     # pwm_ratios = np.zeros(30)

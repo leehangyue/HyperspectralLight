@@ -227,13 +227,15 @@ class PCA9685:
         # off_bits_low = [b for b in reversed(off_bits_low)]
         return (on_bits_low, on_bits_high), (off_bits_low, off_bits_high)
 
-    def set_channels(self, channel_flux_ratios: list[float]) -> None:
+    def set_channels(self, channel_flux_ratios: list[float], offset: float = 0.) -> None:
         """Set PWM levels for all channels.
         
         Parameters
         ----------
         channel_flux_ratios : list[float]
             List of duty cycles (0.0 to 1.0) for each channel
+        offset : float, optional
+            Phase offset (0.0 to 1.0), by default 0.0
             
         Notes
         -----
@@ -254,9 +256,7 @@ class PCA9685:
         # buff += bytes([self.allcalladr])
         buff = bytes()
 
-        offset = 0.
         for led_level in channel_flux_ratios:
-            # offset = 0.
             on_bytes, off_bytes = self.led_level_to_on_off_bytes(led_level=led_level, offset=offset)
             offset += led_level
             buff += self.bits2byte(on_bytes[0])
