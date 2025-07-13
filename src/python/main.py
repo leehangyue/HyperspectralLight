@@ -314,15 +314,22 @@ def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
         pwm_ratios = h_light.get_pwm_ratios_from_channel_flux_ratios(channel_flux_ratios=channel_flux_ratios)
         pwm_ratios = np.minimum(1., pwm_ratios)
 
-        pca9685 = PCA9685()
-
         pwm_ratios_1 = np.append(pwm_ratios[ctrl1_channels], 0.)
-        pca9685.i2c_address = int(0x43)
-        pca9685.set_channels(channel_flux_ratios=pwm_ratios_1, offset=0.)
-
         pwm_ratios_2 = np.append(pwm_ratios[ctrl2_channels], 0.)
-        pca9685.i2c_address = int(0x42)
-        pca9685.set_channels(channel_flux_ratios=pwm_ratios_2, offset=0.)
+
+        # pca9685 = PCA9685()
+
+        # pca9685.i2c_address = int(0x43)
+        # pca9685.set_channels(channel_flux_ratios=pwm_ratios_1, offset=0.)
+
+        # pca9685.i2c_address = int(0x42)
+        # pca9685.set_channels(channel_flux_ratios=pwm_ratios_2, offset=0.)
+
+        pca9685 = PCA9685(i2c_address=0x43, i2c_address2=0x42)
+        pca9685.set_channels_double(
+            channel_flux_ratios1=pwm_ratios_1, channel_flux_ratios2=pwm_ratios_2,
+            offset1=0., offset2=0.
+        )
 
         pca9685.sender.stop()
 
@@ -333,10 +340,12 @@ def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
 
 
 if __name__ == "__main__":
+    from util_pca9685 import lights_off
     try:
         # main_static()
         main_animate()
+    except KeyboardInterrupt:
+        lights_off()
     finally:
-        from util_pca9685 import lights_off
         lights_off()
     

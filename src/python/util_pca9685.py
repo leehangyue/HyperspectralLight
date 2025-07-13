@@ -72,13 +72,15 @@ class PCA9685:
     LED_LEVELS = 4096
     MIN_DELAY = 5e-6  # seconds, I2C bus max 100 kHz
 
-    def __init__(self, i2c_address: int = 0x40) -> None:
+    def __init__(self, i2c_address: int = 0x40, i2c_address2: int = None) -> None:
         """Initialize PCA9685 controller.
         
         Parameters
         ----------
         i2c_address : int, optional
             I2C device address, by default 0x40
+        i2c_address2 : int, optional
+            I2C device address, by default None, if set, uses SerialToI2CSenderDouble
             
         Notes
         -----
@@ -94,7 +96,12 @@ class PCA9685:
         #     self.board = firmata.Arduino(board_adr)
         self.freq = 200  # Hz, hardware default
         self.prescale = 30
-        self.sender = SerialToI2CSenderDouble(i2c_address=i2c_address)
+        if i2c_address2 is None:
+            self.sender = SerialToI2CSender(i2c_address=i2c_address)
+            self.address_count = 1
+        else:
+            self.sender = SerialToI2CSenderDouble(i2c_address1=i2c_address, i2c_address2=i2c_address2)
+            self.address_count = 2
         self.mode1 = {
             "RESTART": False,   # 7
             "EXTCLK": False,    # 6
@@ -119,12 +126,19 @@ class PCA9685:
     
     @property
     def i2c_address(self):
-        return self.sender.i2c_address
+        if self.address_count == 1:
+            return self.sender.i2c_address
+        else:
+            return [self.sender.i2c_address1, self.sender.i2c_address2]
 
     @i2c_address.setter
-    def i2c_address(self, value: int):
+    def i2c_address(self, value):
         """Set the I2C address for the sender."""
-        self.sender.i2c_address = value
+        if self.address_count == 1:
+            self.sender.i2c_address = value
+        else:
+            self.sender.i2c_address1 = value[0]
+            self.sender.i2c_address2 = value[1]
 
     @staticmethod
     def int2bit_list(x: int, min_len: int) -> list[int]:
@@ -243,6 +257,9 @@ class PCA9685:
         - Sends combined data via I2C
         - Currently supports up to 16 channels
         """
+
+        if self.address_count != 1:
+            raise ValueError(f"set_channels can only be used with address_count == 1, while address_count = {self.address_count}")
         # assert len(channel_flux_ratios) == len(self.REGs_LED_ON)
         # self.send_wake(device_id=device_id)
 
@@ -267,7 +284,55 @@ class PCA9685:
         self.sender.send(data=buff)
 
 
-class SerialToI2CSenderDouble:
+    def set_channels_double(self, 
+                            channel_flux_ratios1: list[float], channel_flux_ratios2: list[float], 
+                            offset1: float = 0., offset2: float = 0.
+                            ) -> None:
+        """Set PWM levels for all channels.
+        
+        Parameters
+        ----------
+        channel_flux_ratios1 : list[float]
+            List of duty cycles (0.0 to 1.0) for each channel
+        offset1 : float, optional
+            Phase offset (0.0 to 1.0), by default 0.0
+        channel_flux_ratios2 : list[float]
+            List of duty cycles (0.0 to 1.0) for each channel
+        offset2 : float, optional
+            Phase offset (0.0 to 1.0), by default 0.0
+            
+        Notes
+        -----
+        - Converts each ratio to ON/OFF register values
+        - Sends combined data via I2C
+        - Currently supports up to 16 channels
+        """
+
+        if self.address_count != 2:
+            raise ValueError(f"set_channels_double can only be used with address_count == 2, while address_count = {self.address_count}")
+        
+        buff1 = bytes()
+        for led_level in channel_flux_ratios1:
+            on_bytes, off_bytes = self.led_level_to_on_off_bytes(led_level=led_level, offset=offset1)
+            offset1 += led_level
+            buff1 += self.bits2byte(on_bytes[0])
+            buff1 += self.bits2byte(on_bytes[1])
+            buff1 += self.bits2byte(off_bytes[0])
+            buff1 += self.bits2byte(off_bytes[1])
+
+        buff2 = bytes()
+        for led_level in channel_flux_ratios2:
+            on_bytes, off_bytes = self.led_level_to_on_off_bytes(led_level=led_level, offset=offset2)
+            offset2 += led_level
+            buff2 += self.bits2byte(on_bytes[0])
+            buff2 += self.bits2byte(on_bytes[1])
+            buff2 += self.bits2byte(off_bytes[0])
+            buff2 += self.bits2byte(off_bytes[1])
+
+        self.sender.send(data1=buff1, data2=buff2)
+
+
+class SerialToI2CSender:
     """Send I2C commands via serial-to-I2C bridge.
     
     Attributes
@@ -305,7 +370,7 @@ class SerialToI2CSenderDouble:
             print(f"No serial ports found. Available ports: {ports}")
         self.port = port
         self.i2c_address = i2c_address
-        print(f"Using {port}")
+        # print(f"Using {port}")
         ser = serial.Serial(self.port, 9600)
         self.ser = ser
         # Give some time to establish the connection
@@ -396,13 +461,15 @@ class SerialToI2CSenderDouble:
         # Give some time to establish the connection
         sleep(1)
 
-    def send(self, data: bytes) -> None:
+    def send(self, data1: bytes, data2: bytes) -> None:
         """Send I2C data via serial bridge.
         
         Parameters
         ----------
-        data : bytes
-            Raw I2C data to send
+        data1 : bytes
+            Raw I2C data to send to address1
+        data2 : bytes
+            Raw I2C data to send to address2
             
         Notes
         -----
@@ -413,10 +480,12 @@ class SerialToI2CSenderDouble:
         # device_id is either 1 or 2
         # Example I2C address and data to send
         # i2c_address = 0x40  # I2C address of the device
-        len_data = len(data) // 4
+        len_data = len(data1) // 4
+        assert len_data == len(data2) // 4
 
         # Send the I2C address and the number of bytes
-        bytes_to_send = bytes([self.i2c_address, len_data]) + data + bytes([0x00, ] * 4)
+        bytes_to_send = bytes([self.i2c_address1, self.i2c_address2, len_data]) \
+                                + data1 + bytes([0x00, ] * 4) + data2 + bytes([0x00, ] * 4)
 
         # Send the data bytes
         self.ser.flush()
@@ -456,6 +525,10 @@ def lights_off():
     pca9685.set_channels(channel_flux_ratios=[0.] * 16)
     pca9685.i2c_address = int(0x42)
     pca9685.set_channels(channel_flux_ratios=[0.] * 16)
+    pca9685.sender.stop()
+
+    pca9685 = PCA9685(i2c_address=0x43, i2c_address2=0x42)
+    pca9685.set_channels_double(channel_flux_ratios1=[0.] * 16, channel_flux_ratios2=[0.] * 16)
     pca9685.sender.stop()
 
 
