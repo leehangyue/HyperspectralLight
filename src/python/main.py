@@ -223,8 +223,7 @@ def main_static():
     pca9685.sender.stop()
 
 
-def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
-    interval = 1. / fps
+def main_animate(fps: float = None, time_resolution_ms = 10., acceleration: float = 30):
     h_light = HyperspectralLight(min_wl=340, max_wl=1020, 
                                 #  channel_spectra_path=join(dirname(dirname(dirname(__file__))), "res/channel_calibration_data_open"),
                                  channel_spectra_path=join(dirname(dirname(dirname(__file__))), "res/channel_calibration_data_barrel"),
@@ -244,11 +243,11 @@ def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
     blur_kernel = np.exp(-((np.arange(-blur_radius * 3, blur_radius * 3 + 1)) / blur_radius) ** 2 / 2)  # gaussian kernel
     blur_kernel /= np.sum(blur_kernel)
 
-    uv_off = True
-    # uv_off = False
+    # uv_off = True
+    uv_off = False
 
-    ir_off = True
-    # ir_off = False
+    # ir_off = True
+    ir_off = False
 
     max_flux_ratio = 0.9  # maximum flux ratio for any channel
 
@@ -262,20 +261,30 @@ def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
     # zenodo_dataset = ZenodoDataset()
     # spectrum_list = zenodo_dataset.load("daylight_timelapse")
 
+    fname_sample = 'res/sample spectra/SunsetRed/merged_spectra_only.csv'
+    with open(fname_sample, "r") as f:
+        line1 = f.readlines(1)[0]
+        entries = line1.strip("\n").split(",")[1:]
+        time_since_start = [float(entry) for entry in entries]
+    intervals = np.diff(time_since_start)
+    intervals = np.append(intervals, intervals[-1]) / acceleration
     spectrum_list = [
         {
             "wavelengths": wavelengths,
-            "spectrum": read_spectrum_file(fname='res/sample spectra/SunsetRed/merged_spectra_only.csv', 
+            "spectrum": read_spectrum_file(fname=fname_sample, 
                                            wavelengths=wavelengths, 
                                            intensity_column=i)
         }
-        for i in range(190)
+        for i in range(180)
     ]
 
     pca9685 = PCA9685(i2c_address=0x43, i2c_address2=0x42)
 
+    if fps is not None:
+        intervals = np.ones(len(spectrum_list)) / fps
+
     from tqdm import tqdm
-    for spectrum_dict in tqdm(spectrum_list):
+    for i, spectrum_dict in enumerate(tqdm(spectrum_list)):
         time0 = time_ns()
         sample_wls = spectrum_dict["wavelengths"]
         sample_spt = spectrum_dict["spectrum"]
@@ -336,7 +345,7 @@ def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
         # pca9685.sender.stop()
 
         time1 = time_ns()
-        while time1 - time0 < interval * 1e9:
+        while time1 - time0 < intervals[i] * 1e9:
             sleep(time_resolution_ms * 1e-3)
             time1 = time_ns()
         
@@ -347,7 +356,7 @@ if __name__ == "__main__":
     from util_pca9685 import lights_off
     try:
         # main_static()
-        main_animate(fps=2.5)
+        main_animate(fps=None, acceleration=30)
     except KeyboardInterrupt:
         lights_off()
     finally:
