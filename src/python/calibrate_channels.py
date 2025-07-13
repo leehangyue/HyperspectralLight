@@ -4,6 +4,7 @@ from os.path import join, split, isdir
 from os import makedirs
 from torch_bearer_api import PJGSpectrometer
 from util_pca9685 import PCA9685, list_serial_ports
+from util_pca9685 import lights_off
 
 
 def time_to_str(time_epoch: float):
@@ -23,15 +24,6 @@ def time_to_str(time_epoch: float):
     # Combine into final string
     formatted_time = f"{time_str_with_ms} UTC{timezone}"
     return formatted_time
-
-
-def lights_off():
-    pca9685 = PCA9685()
-    pca9685.i2c_address = int(0x43)
-    pca9685.set_channels(channel_flux_ratios=np.zeros(16))
-    pca9685.i2c_address = int(0x42)
-    pca9685.set_channels(channel_flux_ratios=np.zeros(16))
-    pca9685.sender.stop()
 
 
 def save_calibration_data(spectrometer_port: str, n_channels: int = 30, 

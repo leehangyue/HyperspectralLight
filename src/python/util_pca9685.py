@@ -94,7 +94,7 @@ class PCA9685:
         #     self.board = firmata.Arduino(board_adr)
         self.freq = 200  # Hz, hardware default
         self.prescale = 30
-        self.sender = SerialToI2CSender(i2c_address=i2c_address)
+        self.sender = SerialToI2CSenderDouble(i2c_address=i2c_address)
         self.mode1 = {
             "RESTART": False,   # 7
             "EXTCLK": False,    # 6
@@ -267,7 +267,7 @@ class PCA9685:
         self.sender.send(data=buff)
 
 
-class SerialToI2CSender:
+class SerialToI2CSenderDouble:
     """Send I2C commands via serial-to-I2C bridge.
     
     Attributes
@@ -347,6 +347,91 @@ class SerialToI2CSender:
         self.ser.close()
 
 
+class SerialToI2CSenderDouble:
+    """Send I2C commands via serial-to-I2C bridge.
+    
+    Attributes
+    ----------
+    port : str
+        Serial port name
+    i2c_address1 : int
+        I2C device address
+    i2c_address2 : int
+        I2C device address
+    ser : serial.Serial
+        Serial connection instance
+    """
+    
+    def __init__(self, i2c_address1: int = 0x43, i2c_address2: int = 0x42) -> None:
+        """Initialize serial-to-I2C sender.
+        
+        Parameters
+        ----------
+        i2c_address1 : int, optional
+            I2C device address, by default 0x43
+        i2c_address2 : int, optional
+            I2C device address, by default 0x42
+            
+        Notes
+        -----
+        - Automatically detects USB serial ports
+        - Configures serial connection at 19200 baud
+        - Waits 1 second for connection stabilization
+        """
+        # Configure the serial connection
+        ports = list_serial_ports()
+        port = None
+        for p in ports:
+            if "usbserial" in p:
+                port = p
+                break
+        else:
+            print(f"No serial ports found. Available ports: {ports}")
+        self.port = port
+        self.i2c_address1 = i2c_address1
+        self.i2c_address2 = i2c_address2
+        print(f"Using {port}")
+        ser = serial.Serial(self.port, 9600)
+        self.ser = ser
+        # Give some time to establish the connection
+        sleep(1)
+
+    def send(self, data: bytes) -> None:
+        """Send I2C data via serial bridge.
+        
+        Parameters
+        ----------
+        data : bytes
+            Raw I2C data to send
+            
+        Notes
+        -----
+        - Prepends I2C address and data length
+        - Adds padding bytes
+        - Waits proportionally to data length
+        """
+        # device_id is either 1 or 2
+        # Example I2C address and data to send
+        # i2c_address = 0x40  # I2C address of the device
+        len_data = len(data) // 4
+
+        # Send the I2C address and the number of bytes
+        bytes_to_send = bytes([self.i2c_address, len_data]) + data + bytes([0x00, ] * 4)
+
+        # Send the data bytes
+        self.ser.flush()
+        n_bytes_sent = self.ser.write(bytes_to_send)
+        # print(f"Sent {n_bytes_sent} bytes to I2C address 0x{self.i2c_address:02x}:")
+        # print("Sent bytes:")
+        # print(bytes_to_send.hex(' ', 4))
+        sleep(1e-3 * len(bytes_to_send) + 1e-2)
+
+    def stop(self):
+        sleep(0.1)
+        # Close the serial connection
+        self.ser.close()
+
+
 def list_serial_ports():
     """ Lists serial port names.
         :raises EnvironmentError:
@@ -363,6 +448,15 @@ def list_serial_ports():
         ports = list_ports.grep('')
 
     return [port.device for port in ports]
+
+
+def lights_off():
+    pca9685 = PCA9685()
+    pca9685.i2c_address = int(0x43)
+    pca9685.set_channels(channel_flux_ratios=[0.] * 16)
+    pca9685.i2c_address = int(0x42)
+    pca9685.set_channels(channel_flux_ratios=[0.] * 16)
+    pca9685.sender.stop()
 
 
 def main():

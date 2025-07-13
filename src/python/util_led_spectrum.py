@@ -289,6 +289,8 @@ class Channel:
         - For wavelengths=None, returns spectrum at native sampling
         - Clips flux_ratio to minimum 0
         """
+        if np.max(self._flux_ratios) == 0.:
+            return np.zeros_like(self._spectrum_lib[0, :])
         if 0 <= flux_ratio <= 1:
             spectrum = interp1d(x=self._flux_ratios, y=self._spectrum_lib,
                                 axis=0, bounds_error=False, fill_value=0.)(flux_ratio)
