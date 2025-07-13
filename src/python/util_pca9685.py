@@ -455,7 +455,7 @@ class SerialToI2CSenderDouble:
         self.port = port
         self.i2c_address1 = i2c_address1
         self.i2c_address2 = i2c_address2
-        print(f"Using {port}")
+        # print(f"Using {port}")
         ser = serial.Serial(self.port, 9600)
         self.ser = ser
         # Give some time to establish the connection

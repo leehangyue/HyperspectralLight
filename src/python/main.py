@@ -272,7 +272,10 @@ def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
         for i in range(190)
     ]
 
-    for spectrum_dict in spectrum_list:
+    pca9685 = PCA9685(i2c_address=0x43, i2c_address2=0x42)
+
+    from tqdm import tqdm
+    for spectrum_dict in tqdm(spectrum_list):
         time0 = time_ns()
         sample_wls = spectrum_dict["wavelengths"]
         sample_spt = spectrum_dict["spectrum"]
@@ -325,25 +328,26 @@ def main_animate(fps: float = 0.5, time_resolution_ms = 10.):
         # pca9685.i2c_address = int(0x42)
         # pca9685.set_channels(channel_flux_ratios=pwm_ratios_2, offset=0.)
 
-        pca9685 = PCA9685(i2c_address=0x43, i2c_address2=0x42)
         pca9685.set_channels_double(
             channel_flux_ratios1=pwm_ratios_1, channel_flux_ratios2=pwm_ratios_2,
             offset1=0., offset2=0.
         )
 
-        pca9685.sender.stop()
+        # pca9685.sender.stop()
 
         time1 = time_ns()
         while time1 - time0 < interval * 1e9:
             sleep(time_resolution_ms * 1e-3)
             time1 = time_ns()
+        
+    pca9685.sender.stop()
 
 
 if __name__ == "__main__":
     from util_pca9685 import lights_off
     try:
         # main_static()
-        main_animate()
+        main_animate(fps=2.5)
     except KeyboardInterrupt:
         lights_off()
     finally:
