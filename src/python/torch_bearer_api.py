@@ -1,11 +1,11 @@
 import serial
 import struct
 import time
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple
 
 class PJGSpectrometer:
     """
-    PJG光谱仪API类
+    PJG光谱仪API类，适用P42B5
     串口设置: 115200 bps, 8数据位, 1停止位, 无校验, 无流控制
     """
     
